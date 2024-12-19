@@ -1,124 +1,372 @@
+import os
 import random
+import sqlite3
+from PIL import Image
 import streamlit as st
+
+# Caminho para salvar as fotos dos jogadores
+PHOTO_FOLDER = "fotos_jogadores"
+DEFAULT_PHOTO = "default.jpg"  # Caminho da foto padrão
+DB_PATH = "jogadores.db"
+
+# Verificar se a foto padrão existe
+if not os.path.exists(DEFAULT_PHOTO):
+    st.error("A imagem padrão 'default.jpg' não foi encontrada. Verifique o diretório.")
+    st.stop()
+
+# Criar a pasta de fotos, se não existir
+if not os.path.exists(PHOTO_FOLDER):
+    os.makedirs(PHOTO_FOLDER)
+
+def criar_tabela():
+    """Cria ou atualiza a tabela de jogadores."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jogadores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            qualidade INTEGER NOT NULL CHECK(qualidade IN (1, 2, 3)),
+            goleiro BOOLEAN NOT NULL DEFAULT 0,
+            foto TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def verificar_ou_adicionar_coluna_foto():
+    """Verifica se a coluna 'foto' existe, e a adiciona se necessário."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE jogadores ADD COLUMN foto TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # A coluna já existe
+    conn.close()
+
+def redimensionar_imagem(caminho_imagem, largura=100, altura=100):
+    """Redimensiona uma imagem para o tamanho especificado."""
+    try:
+        with Image.open(caminho_imagem) as img:
+            img = img.resize((largura, altura))
+            return img
+    except Exception as e:
+        st.error(f"Erro ao carregar a imagem: {e}")
+        return None
+
+def inserir_jogador(nome, qualidade, goleiro, foto=None):
+    """Insere um jogador no banco de dados."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO jogadores (nome, qualidade, goleiro, foto)
+        VALUES (?, ?, ?, ?)
+    """, (nome, qualidade, goleiro, foto))
+    conn.commit()
+    conn.close()
+
+def atualizar_jogador(jogador_id, nome, qualidade, goleiro, foto=None):
+    """Atualiza os dados de um jogador no banco de dados."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE jogadores
+        SET nome = ?, qualidade = ?, goleiro = ?, foto = ?
+        WHERE id = ?
+    """, (nome, qualidade, goleiro, foto, jogador_id))
+    conn.commit()
+    conn.close()
+
+def listar_jogadores():
+    """Retorna a lista de jogadores do banco de dados."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, nome, qualidade, goleiro, foto FROM jogadores")
+    jogadores = cursor.fetchall()
+    conn.close()
+    return jogadores
+
+def deletar_jogador(jogador_id):
+    """Deleta um jogador pelo ID."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM jogadores WHERE id = ?", (jogador_id,))
+    conn.commit()
+    conn.close()
+
+# Inicializa o banco de dados
+criar_tabela()
+verificar_ou_adicionar_coluna_foto()
 
 # Configura o título do aplicativo
 st.title("Sorteio de Times de Futsal ⚽")
-st.write("Adicione os jogadores e clique no botão para formar os times.")
+st.write("Cadastre os jogadores e monte seus times.")
 
-# Seção para entrada de múltiplos jogadores
-st.header("Adicionar Jogadores")
+# Aba de navegação
+aba = st.sidebar.radio("Menu", ["Cadastro de Jogadores", "Sorteio de Times"])
 
-adicionar_jogadores_expander = st.expander("Adicionar Jogadores", expanded=True)
+if aba == "Cadastro de Jogadores":
+    st.header("Cadastro de Jogadores")
 
-with adicionar_jogadores_expander:
-    jogadores_texto = st.text_area(
-        "Cole a lista de jogadores (formato: Nome)",
-        height=200,
-        help="Exemplo: João\nPedro\nCarlos"
-    )
+    # Variável para armazenar jogador a ser editado
+    if "jogador_edicao" not in st.session_state:
+        st.session_state.jogador_edicao = None
 
-    adicionar_jogadores = st.button("Adicionar Jogadores")
+    # Formulário de cadastro ou edição
+    with st.form("cadastro_form"):
+        nome = st.text_input("Nome do Jogador", value=st.session_state.jogador_edicao["nome"] if st.session_state.jogador_edicao else "")
+        qualidade = st.selectbox("Nível do Jogador", [1, 2, 3], index=(st.session_state.jogador_edicao["qualidade"] - 1) if st.session_state.jogador_edicao else 0)
+        goleiro = st.checkbox("Goleiro", value=st.session_state.jogador_edicao["goleiro"] if st.session_state.jogador_edicao else False)
+        foto = st.file_uploader("Foto do Jogador (opcional)", type=["jpg", "png", "jpeg"])
 
-    if "jogadores" not in st.session_state:
-        st.session_state.jogadores = []
+        submit = st.form_submit_button("Salvar")
 
-    if adicionar_jogadores and jogadores_texto:
-        st.session_state.jogadores.clear()
-        jogadores_listados = jogadores_texto.split("\n")
-        for jogador in jogadores_listados:
-            nome = jogador.strip()
-            if nome:  # Evitar nomes vazios
-                st.session_state.jogadores.append({"nome": nome, "qualidade": None, "goleiro": False})
-        st.success(f"{len(st.session_state.jogadores)} jogadores foram adicionados à lista!")
+        if submit:
+            if nome.strip():
+                # Salvar a foto se ela foi enviada
+                foto_caminho = None
+                if foto:
+                    foto_nome = f"{nome.strip()}_{foto.name}"
+                    foto_caminho = os.path.join(PHOTO_FOLDER, foto_nome)
+                    with open(foto_caminho, "wb") as f:
+                        f.write(foto.getbuffer())
+                elif st.session_state.jogador_edicao:
+                    # Manter a foto existente se não for enviada uma nova
+                    foto_caminho = st.session_state.jogador_edicao["foto"]
+                else:
+                    # Usar a foto padrão
+                    foto_caminho = DEFAULT_PHOTO
 
-# Exibir o número total de jogadores na lista
-st.write(f"Total de jogadores na lista: {len(st.session_state.jogadores)}")
+                if st.session_state.jogador_edicao:
+                    # Atualizar jogador existente
+                    atualizar_jogador(st.session_state.jogador_edicao["id"], nome.strip(), qualidade, goleiro, foto_caminho)
+                    st.success(f"Jogador {nome} atualizado com sucesso!")
+                    st.session_state.jogador_edicao = None
+                else:
+                    # Inserir novo jogador
+                    inserir_jogador(nome.strip(), qualidade, goleiro, foto_caminho)
+                    st.success(f"Jogador {nome} cadastrado com sucesso!")
+                st.rerun()
+            else:
+                st.error("O nome do jogador não pode estar vazio.")
 
-# Seção para editar jogadores e atribuir qualidade
-st.subheader("Atribuir Qualidade e Goleiro")
-atribuir_qualidade_expander = st.expander("Atribuir Qualidade e Goleiro", expanded=True)
+    # Exibir jogadores cadastrados
+    st.subheader("Jogadores Cadastrados")
+    jogadores = listar_jogadores()
+    for jogador in jogadores:
+        id_, nome, qualidade, goleiro, foto = jogador
+        col1, col2, col3 = st.columns([1, 3, 2])
 
-with atribuir_qualidade_expander:
-    for idx, jogador in enumerate(st.session_state.jogadores):
-        # Criação de uma área visual para cada jogador
-        with st.container():
-            st.markdown("---")  # Linha divisória
-            st.markdown(f"### Jogador {idx + 1}")
-            
-            col1, col2, col3 = st.columns([2, 1, 1])
-            with col1:
-                nome_editado = st.text_input(f"Nome", value=jogador["nome"], key=f"nome_{idx}")
-            with col2:
-                qualidade_editada = st.selectbox(
-                    f"Qualidade",
-                    options=[1, 2, 3],
-                    index=(jogador["qualidade"] or 2)-1,
-                    key=f"qualidade_{idx}"
+        # Exibir a foto redimensionada
+        with col1:
+            imagem = redimensionar_imagem(foto if foto and os.path.exists(foto) else DEFAULT_PHOTO)
+            if imagem:
+                st.image(imagem)
+            else:
+                st.image(DEFAULT_PHOTO, use_container_width=True)
+
+        with col2:
+            st.write(f"**{nome}** (Nível {qualidade}, {'Goleiro' if goleiro else 'Jogador de linha'})")
+
+        with col3:
+            if st.button("Editar", key=f"edit_{id_}"):
+                st.session_state.jogador_edicao = {
+                    "id": id_,
+                    "nome": nome,
+                    "qualidade": qualidade,
+                    "goleiro": goleiro,
+                    "foto": foto
+                }
+                st.rerun()
+            if st.button("Deletar", key=f"delete_{id_}"):
+                deletar_jogador(id_)
+                st.rerun()
+
+elif aba == "Sorteio de Times":
+    st.header("Sorteio de Times")
+
+    # Seleção de jogadores para o sorteio
+    st.subheader("Selecione os Jogadores")
+    jogadores = listar_jogadores()
+
+    # Ordenação dos jogadores conforme a regra definida
+    goleiros = sorted([j for j in jogadores if j[3]], key=lambda x: x[1])
+    nivel_1 = sorted([j for j in jogadores if j[2] == 1 and not j[3]], key=lambda x: x[1])
+    nivel_2 = sorted([j for j in jogadores if j[2] == 2 and not j[3]], key=lambda x: x[1])
+    nivel_3 = sorted([j for j in jogadores if j[2] == 3 and not j[3]], key=lambda x: x[1])
+
+    # Inicializa o estado dos checkboxes
+    if "checkbox_states" not in st.session_state:
+        st.session_state.checkbox_states = {j[0]: False for j in jogadores}
+
+    # Botão "Selecionar Todos"
+    if st.button("Selecionar Todos"):
+        todos_marcados = all(st.session_state.checkbox_states.values())
+        for jogador in jogadores:
+            st.session_state.checkbox_states[jogador[0]] = not todos_marcados
+
+    # Função para exibir jogadores por seção
+    jogadores_selecionados = []
+
+    def exibir_secao(titulo, jogadores):
+        with st.expander(titulo, expanded=True):
+            for jogador in jogadores:
+                id_, nome, qualidade, goleiro, foto = jogador
+                col1, col2 = st.columns([1, 5])
+
+                with col1:
+                    # Exibir a foto redimensionada do jogador ou a foto padrão
+                    imagem = redimensionar_imagem(foto if foto and os.path.exists(foto) else DEFAULT_PHOTO)
+                    if imagem:
+                        st.image(imagem)
+                    else:
+                        st.image(DEFAULT_PHOTO, use_container_width=True)
+
+                with col2:
+                    # Checkbox para seleção de jogadores
+                    if st.checkbox(
+                        f"{nome} (Nível {qualidade}, {'Goleiro' if goleiro else 'Jogador de linha'})",
+                        key=f"select_{id_}",
+                        value=st.session_state.checkbox_states[id_]
+                    ):
+                        st.session_state.checkbox_states[id_] = True
+                        jogadores_selecionados.append({"nome": nome, "qualidade": qualidade, "goleiro": goleiro, "foto": foto})
+                    else:
+                        st.session_state.checkbox_states[id_] = False
+
+    # Exibir os jogadores em seções
+    exibir_secao("Goleiros", goleiros)
+    exibir_secao("Nível 1", nivel_1)
+    exibir_secao("Nível 2", nivel_2)
+    exibir_secao("Nível 3", nivel_3)
+
+    # Exibir o número de jogadores selecionados
+    st.sidebar.subheader("Jogadores Selecionados")
+    st.sidebar.write(f"Total: {len(jogadores_selecionados)} jogador(es) selecionado(s).")
+
+    # Seleção do número de times
+    num_times = st.selectbox("Quantos times você deseja?", options=[2, 3, 4, 5, 6], index=2)
+
+    # Botão para sortear os times
+    if st.button("Sortear Times"):
+        if not jogadores_selecionados:
+            st.warning("Nenhum jogador foi selecionado!")
+        else:
+            num_jogadores_selecionados = len(jogadores_selecionados)
+            jogadores_necessarios = num_times * 5
+
+            # Verificar o número máximo de times possíveis com os jogadores selecionados e fictícios
+            max_times_possiveis = (num_jogadores_selecionados + 4) // 5  # Inclui jogadores fictícios
+
+            # Caso haja jogadores excedentes
+            if num_jogadores_selecionados > jogadores_necessarios:
+                excedente = num_jogadores_selecionados - jogadores_necessarios
+                times_adicionais = (excedente + 4) // 5  # Arredonda para cima
+                st.warning(
+                    f"Jogadores selecionados excedem a capacidade dos times! "
+                    f"Adicione mais {times_adicionais} time(s) para acomodar todos os jogadores."
                 )
-            with col3:
-                goleiro_editado = st.checkbox(f"Goleiro", value=jogador["goleiro"], key=f"goleiro_{idx}")
+                st.stop()
+            elif num_times > max_times_possiveis:
+                st.error(
+                    f"Faltam jogadores para completar os times! O número máximo de times possíveis para "
+                    f"{num_jogadores_selecionados} jogadores, considerando jogadores fictícios, é {max_times_possiveis}. "
+                    "Por favor, ajuste o número de times."
+                )
+                st.stop()
 
-            # Atualiza o estado do jogador
-            st.session_state.jogadores[idx] = {
-                "nome": nome_editado,
-                "qualidade": qualidade_editada,
-                "goleiro": goleiro_editado
-            }
-# Botão para limpar lista de jogadores
-if st.button("Limpar Lista de Jogadores"):
-    st.session_state.jogadores.clear()  # Limpa a lista de jogadores
-    # Reseta todos os estados associados aos inputs de qualidade e goleiro
-    for key in list(st.session_state.keys()):
-        if key.startswith("nome_") or key.startswith("qualidade_") or key.startswith("goleiro_"):
-            del st.session_state[key]
-    st.success("Lista de jogadores e configurações limpas.")
+            # Caso faltem jogadores para completar os times
+            elif num_jogadores_selecionados < jogadores_necessarios:
+                faltando = jogadores_necessarios - num_jogadores_selecionados
+                if faltando <= 4:
+                    st.info(f"Faltam {faltando} jogador(es) para completar os times. Jogadores fictícios ('FICTÍCIO') serão adicionados.")
+                else:
+                    times_adicionais = (faltando + 4) // 5
+                    st.warning(
+                        f"Faltam jogadores para completar os times! "
+                        f"Adicione mais {times_adicionais} time(s) para acomodar todos os jogadores."
+                    )
+                    st.stop()
 
-# Seleção do número de times
-num_times = st.selectbox("Quantos times você deseja?", options=[2, 3, 4, 5, 6], index=2)
+            # Calcular o número de jogadores fictícios necessários para completar os times
+            faltando = (num_times * 5) - len(jogadores_selecionados)
 
-# Botão para sortear os times
-if st.button("Sortear Times"):
-    jogadores = st.session_state.jogadores.copy()  # Faz uma cópia para evitar alterações diretas
-    times = [[] for _ in range(num_times)]
+            # Adicionar jogadores fictícios, se necessário
+            jogadores_ficticios = [{"nome": f"FICTÍCIO {i+1}", "qualidade": 3, "goleiro": False, "foto": None} for i in range(faltando)]
+            jogadores_selecionados.extend(jogadores_ficticios)
 
-    # Separar jogadores por características
-    goleiros = [j for j in jogadores if j["goleiro"]]
-    nivel_1 = [j for j in jogadores if j["qualidade"] == 1 and not j["goleiro"]]
-    nivel_2 = [j for j in jogadores if j["qualidade"] == 2 and not j["goleiro"]]
-    nivel_3 = [j for j in jogadores if j["qualidade"] == 3 and not j["goleiro"]]
+            # Inicializar times
+            times = [[] for _ in range(num_times)]
+            jogadores_usados = set()
 
-    # Distribuir goleiros: 1 por time, se possível
-    for i in range(num_times):
-        if goleiros:
-            times[i].append(goleiros.pop(0))
+            # Separar jogadores por categorias
+            goleiros = [j for j in jogadores_selecionados if j["goleiro"]]
+            nivel_1 = [j for j in jogadores_selecionados if j["qualidade"] == 1 and not j["goleiro"]]
+            nivel_2 = [j for j in jogadores_selecionados if j["qualidade"] == 2 and not j["goleiro"]]
+            nivel_3 = [j for j in jogadores_selecionados if j["qualidade"] == 3 and not j["goleiro"]]
 
-    # Distribuir jogadores de nível 1
-    for i in range(num_times):
-        if nivel_1:
-            times[i].append(nivel_1.pop(0))
+            # Preencher os times com goleiros (ou substitutos de nível 2)
+            random.shuffle(goleiros)
+            for i, time in enumerate(times):
+                if goleiros:
+                    time.append(goleiros.pop(0))
+                    jogadores_usados.add(time[-1]["nome"])
+                else:
+                    # Adicionar um substituto de nível 2 se não houver goleiro
+                    for jogador in nivel_2:
+                        if jogador["nome"] not in jogadores_usados:
+                            time.append(jogador)
+                            jogadores_usados.add(jogador["nome"])
+                            nivel_2.remove(jogador)
+                            break
 
-    # Distribuir jogadores de nível 3
-    for i in range(num_times):
-        if nivel_3:
-            times[i].append(nivel_3.pop(0))
+            # Garantir pelo menos 1 jogador de nível 1 ou substituto de nível 2 por time
+            for time in times:
+                if len(time) < 2:  # Verifica se o time já tem um jogador de nível 1/substituto
+                    if nivel_1:
+                        jogador = nivel_1.pop(0)
+                        time.append(jogador)
+                        jogadores_usados.add(jogador["nome"])
+                    elif nivel_2:
+                        jogador = nivel_2.pop(0)
+                        time.append(jogador)
+                        jogadores_usados.add(jogador["nome"])
 
-    # Distribuir jogadores restantes
-    jogadores_restantes = nivel_1 + nivel_2 + nivel_3  # Todos os jogadores que sobraram
-    jogadores_restantes.sort(key=lambda x: x["qualidade"], reverse=True)  # Priorizar maiores qualidades
+            # Função para distribuir jogadores de um nível
+            def distribuir_jogadores_por_nivel(jogadores, times):
+                random.shuffle(jogadores)
+                for jogador in jogadores:
+                    if jogador["nome"] in jogadores_usados:
+                        continue
+                    for time in sorted(times, key=lambda t: (len(t), sum(j["qualidade"] for j in t))):
+                        if len(time) < 5:
+                            time.append(jogador)
+                            jogadores_usados.add(jogador["nome"])
+                            break
 
-    for jogador in jogadores_restantes[:]:  # Trabalhar com cópia da lista
-        menor_time = min(times, key=lambda t: sum(j["qualidade"] for j in t))
-        menor_time.append(jogador)
-        jogadores_restantes.remove(jogador)
+            # Distribuir jogadores de nível 3 (incluindo fictícios)
+            distribuir_jogadores_por_nivel(nivel_3, times)
 
-    # Adicionar jogadores fictícios para completar os times com menos de 5 jogadores
-    for time in times:
-        while len(time) < 5:
-            time.append({"nome": "FALTOU", "qualidade": 3, "goleiro": False})
+            # Completar os times com jogadores de nível 2
+            distribuir_jogadores_por_nivel(nivel_2, times)
 
-    # Exibir os times e total de qualidade
-    for i, time in enumerate(times):
-        total_qualidade = sum(j["qualidade"] for j in time)
-        st.subheader(f"Time {i+1} (Total de Nível: {total_qualidade})")
-        for jogador in time:
-            st.write(f"{jogador['nome']} {'[Goleiro]' if jogador['goleiro'] else ''}")
+            # Preencher os times incompletos com jogadores fictícios
+            for time in times:
+                while len(time) < 5:
+                    time.append({"nome": "FICTÍCIO", "qualidade": 3, "goleiro": False, "foto": None})
+
+            # Exibir os times com fotos
+            for i, time in enumerate(times):
+                total_qualidade = sum(j["qualidade"] for j in time)
+                st.subheader(f"Time {i+1} (Total de Nível: {total_qualidade})")
+                for jogador in time:
+                    col1, col2 = st.columns([1, 5])
+                    with col1:
+                        imagem = redimensionar_imagem(jogador["foto"] if jogador["foto"] and os.path.exists(jogador["foto"]) else DEFAULT_PHOTO)
+                        if imagem:
+                            st.image(imagem)
+                        else:
+                            st.image(DEFAULT_PHOTO, use_container_width=True)
+                    with col2:
+                        st.write(f"{jogador['nome']} {'[Goleiro]' if jogador['goleiro'] else ''}")
