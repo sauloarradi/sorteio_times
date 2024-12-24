@@ -164,6 +164,8 @@ if aba == "Cadastro de Jogadores":
             if imagem:
                 st.image(imagem)
             else:
+                if imagem.mode != "RGBA":
+                    imagem = imagem.convert("RGBA")
                 st.image(DEFAULT_PHOTO, use_container_width=True)
 
         with col2:
@@ -221,6 +223,8 @@ elif aba == "Sorteio de Times":
                     if imagem:
                         st.image(imagem)
                     else:
+                        if imagem.mode != "RGBA":
+                            imagem = imagem.convert("RGBA")
                         st.image(DEFAULT_PHOTO, use_container_width=True)
 
                 with col2:
@@ -293,7 +297,7 @@ elif aba == "Sorteio de Times":
             faltando = (num_times * 5) - len(jogadores_selecionados)
 
             # Adicionar jogadores fictícios, se necessário
-            jogadores_ficticios = [{"nome": f"FICTÍCIO {i+1}", "qualidade": 3, "goleiro": False, "foto": None} for i in range(faltando)]
+            jogadores_ficticios = [{"nome": f"COMPLETE COM ALGUÉM {i+1}", "qualidade": 3, "goleiro": False, "foto": None} for i in range(faltando)]
             jogadores_selecionados.extend(jogadores_ficticios)
 
             # Inicializar times
@@ -306,19 +310,19 @@ elif aba == "Sorteio de Times":
             nivel_2 = [j for j in jogadores_selecionados if j["qualidade"] == 2 and not j["goleiro"]]
             nivel_3 = [j for j in jogadores_selecionados if j["qualidade"] == 3 and not j["goleiro"]]
 
-            # Preencher os times com goleiros (ou substitutos de nível 2)
+            # Preencher os times com goleiros (priorizando reais e distribuindo fictícios apenas quando necessário)
             random.shuffle(goleiros)
             for i, time in enumerate(times):
                 if goleiros:
                     time.append(goleiros.pop(0))
                     jogadores_usados.add(time[-1]["nome"])
                 else:
-                    # Adicionar um substituto de nível 2 se não houver goleiro
-                    for jogador in nivel_2:
+                    # Garantir que apenas fictícios já adicionados sejam usados como goleiros, se necessário
+                    for jogador in jogadores_ficticios:
                         if jogador["nome"] not in jogadores_usados:
+                            jogador["goleiro"] = True
                             time.append(jogador)
                             jogadores_usados.add(jogador["nome"])
-                            nivel_2.remove(jogador)
                             break
 
             # Garantir pelo menos 1 jogador de nível 1 ou substituto de nível 2 por time
@@ -340,7 +344,7 @@ elif aba == "Sorteio de Times":
                     if jogador["nome"] in jogadores_usados:
                         continue
                     for time in sorted(times, key=lambda t: (len(t), sum(j["qualidade"] for j in t))):
-                        if len(time) < 5:
+                        if len(time) < 5:  # Substituído 't' por 'time'
                             time.append(jogador)
                             jogadores_usados.add(jogador["nome"])
                             break
@@ -354,19 +358,84 @@ elif aba == "Sorteio de Times":
             # Preencher os times incompletos com jogadores fictícios
             for time in times:
                 while len(time) < 5:
-                    time.append({"nome": "FICTÍCIO", "qualidade": 3, "goleiro": False, "foto": None})
+                    for jogador in jogadores_ficticios:
+                        if jogador["nome"] not in jogadores_usados:
+                            time.append(jogador)
+                            jogadores_usados.add(jogador["nome"])
+                            break
 
-            # Exibir os times com fotos
-            for i, time in enumerate(times):
-                total_qualidade = sum(j["qualidade"] for j in time)
-                st.subheader(f"Time {i+1} (Total de Nível: {total_qualidade})")
-                for jogador in time:
-                    col1, col2 = st.columns([1, 5])
-                    with col1:
-                        imagem = redimensionar_imagem(jogador["foto"] if jogador["foto"] and os.path.exists(jogador["foto"]) else DEFAULT_PHOTO)
-                        if imagem:
-                            st.image(imagem)
-                        else:
-                            st.image(DEFAULT_PHOTO, use_container_width=True)
-                    with col2:
-                        st.write(f"{jogador['nome']} {'[Goleiro]' if jogador['goleiro'] else ''}")
+            # Exibir os times com fotos em uma quadra de futsal
+            st.header("Visualização dos Times na Quadra")
+            from PIL import Image, ImageDraw, ImageFont
+
+            # Configurações de tamanho da quadra e posições dos jogadores
+            QUADRA_LARGURA = 800
+            QUADRA_ALTURA = 1200
+
+            formacao = {
+                "goleiro": (QUADRA_LARGURA // 2, 100),
+                "fixo": (QUADRA_LARGURA // 2, 300),
+                "ala_esq": (QUADRA_LARGURA // 4, 500),
+                "ala_dir": (3 * QUADRA_LARGURA // 4, 500),
+                "pivo": (QUADRA_LARGURA // 2, 700),
+            }
+
+            # Carregar a imagem da quadra
+            quadra_base = Image.open("quadra_futsal.jpg")
+            quadra_base = quadra_base.resize((QUADRA_LARGURA, QUADRA_ALTURA))
+
+            if quadra_base.mode != "RGBA":
+                quadra_base = quadra_base.convert("RGBA")
+
+            for idx, time in enumerate(times):
+                quadra = quadra_base.copy()
+                draw = ImageDraw.Draw(quadra)
+
+                # Fonte para os nomes
+                try:
+                    font = ImageFont.truetype("arial.ttf", 20)
+                except IOError:
+                    font = ImageFont.load_default()
+
+                # Adicionar os jogadores na formação
+                posicoes = list(formacao.values())
+                for jogador, posicao in zip(time, posicoes):
+                    x, y = posicao
+                    nome = jogador["nome"]
+
+                    # Desenhar a foto do jogador
+                    if jogador["foto"] and os.path.exists(jogador["foto"]):
+                        foto = Image.open(jogador["foto"])
+                    else:
+                        foto = Image.open(DEFAULT_PHOTO)
+
+                    foto = foto.resize((100, 100))
+                    if foto.mode != "RGBA":
+                        foto = foto.convert("RGBA")
+
+                    quadra.paste(foto, (x - 50, y - 50), mask=foto)
+
+                    # Adicionar o nome abaixo da foto
+                    draw.text((x, y + 60), nome, fill="white", font=font, anchor="mm")
+
+                # Exibir a quadra
+                st.image(quadra, caption=f"Time {idx + 1}", use_container_width=True)
+                from urllib.parse import quote
+
+                def gerar_link_whatsapp(times):
+                    """Gera um link de compartilhamento para WhatsApp com a composição dos times."""
+                    mensagem = "⚽ *Times Sorteados* ⚽\n\n"
+                    for idx, time in enumerate(times, start=1):
+                        mensagem += f"*Time {idx}:*\n"
+                        for jogador in time:
+                            mensagem += f"- {jogador['nome']} {'(Goleiro)' if jogador['goleiro'] else ''}\n"
+                        mensagem += "\n"
+                    link = f"https://api.whatsapp.com/send?text={quote(mensagem)}"
+                    return link
+                
+                # Gerar link para compartilhar os times no WhatsApp
+                link_whatsapp = gerar_link_whatsapp(times)
+                st.markdown(
+                    f"[📤 Compartilhar Times no WhatsApp]({link_whatsapp})",
+                    unsafe_allow_html=True,
+                )
